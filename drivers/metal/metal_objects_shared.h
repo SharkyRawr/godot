@@ -236,6 +236,7 @@ public:
 	NS::SharedPtr<MTL::RenderPipelineState> new_clear_pipeline_state(ClearAttKey &p_key, NS::Error **p_error);
 	NS::SharedPtr<MTL::RenderPipelineState> new_empty_draw_pipeline_state(ClearAttKey &p_key, NS::Error **p_error);
 	NS::SharedPtr<MTL::DepthStencilState> new_depth_stencil_state(bool p_use_depth, bool p_use_stencil);
+	NS::SharedPtr<MTL::ComputePipelineState> new_clear_color_compute_pipeline_state(const char *p_func_name, NS::Error **p_error);
 
 	MDResourceFactory(MTL::Device *p_device, PixelFormats &p_pixel_formats, uint32_t p_max_buffer_count) :
 			device(p_device), pixel_formats(p_pixel_formats), max_buffer_count(p_max_buffer_count) {}
@@ -256,10 +257,15 @@ private:
 		NS::SharedPtr<MTL::DepthStencilState> none;
 	} clear_depth_stencil_state;
 
+	NS::SharedPtr<MTL::ComputePipelineState> clear_color_compute_pipeline;
+	NS::SharedPtr<MTL::ComputePipelineState> clear_color_2d_array_pipeline;
+	NS::SharedPtr<MTL::ComputePipelineState> clear_color_3d_pipeline;
+
 public:
 	MTL::RenderPipelineState *get_clear_render_pipeline_state(ClearAttKey &p_key, NS::Error **p_error);
 	MTL::RenderPipelineState *get_empty_draw_pipeline_state(ClearAttKey &p_key, NS::Error **p_error);
 	MTL::DepthStencilState *get_depth_stencil_state(bool p_use_depth, bool p_use_stencil);
+	MTL::ComputePipelineState *get_clear_color_compute_pipeline_state(MTL::TextureType p_type, NS::Error **p_error);
 
 	explicit MDResourceCache(MTL::Device *p_device, PixelFormats &p_pixel_formats, uint32_t p_max_buffer_count) :
 			resource_factory(new MDResourceFactory(p_device, p_pixel_formats, p_max_buffer_count)) {}
