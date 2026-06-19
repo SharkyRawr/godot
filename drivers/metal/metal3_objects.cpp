@@ -1182,8 +1182,18 @@ void MDCommandBuffer::render_next_subpass() {
 	if (render.current_subpass == UINT32_MAX) {
 		render.current_subpass = 0;
 	} else {
+		uint32_t next = render.current_subpass + 1;
+		// If the next subpass uses the same attachments as the current one, keep the
+		// encoder alive rather than ending and recreating it. On Apple's TBDR GPUs this
+		// avoids an unnecessary store/load cycle through memory between subpasses, as the
+		// data can remain in tile memory.
+		if (render.encoder.get() != nullptr && _can_reuse_encoder_for_subpass(render.current_subpass, next)) {
+			render.current_subpass = next;
+			render.mark_uniforms_dirty();
+			return;
+		}
 		_end_render_pass();
-		render.current_subpass++;
+		render.current_subpass = next;
 	}
 
 	MDFrameBuffer const &fb = *render.frameBuffer;
@@ -1287,6 +1297,44 @@ void MDCommandBuffer::render_next_subpass() {
 		// With a new encoder, all state is dirty.
 		render.dirty.set_flag(RenderState::DIRTY_ALL);
 	}
+}
+
+bool MDCommandBuffer::_can_reuse_encoder_for_subpass(uint32_t p_current, uint32_t p_next) const {
+	MDRenderPass const &pass = *render.pass;
+	if (p_next >= pass.subpasses.size()) {
+		return false;
+	}
+
+	MDSubpass const &cur = pass.subpasses[p_current];
+	MDSubpass const &next = pass.subpasses[p_next];
+
+	if (cur.view_count != next.view_count) {
+		return false;
+	}
+
+	if (cur.color_references.size() != next.color_references.size()) {
+		return false;
+	}
+	for (uint32_t i = 0; i < cur.color_references.size(); i++) {
+		if (cur.color_references[i].attachment != next.color_references[i].attachment) {
+			return false;
+		}
+	}
+
+	if (cur.resolve_references.size() != next.resolve_references.size()) {
+		return false;
+	}
+	for (uint32_t i = 0; i < cur.resolve_references.size(); i++) {
+		if (cur.resolve_references[i].attachment != next.resolve_references[i].attachment) {
+			return false;
+		}
+	}
+
+	if (cur.depth_stencil_reference.attachment != next.depth_stencil_reference.attachment) {
+		return false;
+	}
+
+	return true;
 }
 
 void MDCommandBuffer::render_draw(uint32_t p_vertex_count,
