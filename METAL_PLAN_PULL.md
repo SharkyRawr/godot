@@ -13,8 +13,8 @@ Metal HUD profiling of the editor at 5120×2888 revealed that the GPU was bottle
 
 - **495 compute encoders per frame**, each doing 0.00–0.01ms of GPU work. Every `endEncoding()`/`beginEncoding()` pair on a TBDR GPU forces a tile store/load cycle through memory — pure overhead.
 - **60 render encoders per frame**, with ~9 of them being "Clear Image" passes created solely to clear texture subresources. Each clear of a multi-mip texture created one render encoder per mip level per layer.
-- **~16,301 "Clear Image" render passes** across a capture, flagged by Metal's "Frequent Render Target Change" performance insight.
-- **Result:** 18 FPS, 56ms frame intervals, with the GPU spending more time on encoder transitions than on actual fragment or compute work.
+- **1,602 "Clear Image" render passes** across a capture, flagged by Metal's "Frequent Render Target Change" performance insight.
+- **Result:** 23 FPS, 45ms frame intervals, with the GPU spending more time on encoder transitions than on actual fragment or compute work.
 
 ## Changes
 
@@ -86,22 +86,21 @@ Metal compute kernels cannot write to multisample textures (`texture2d_ms`) via 
 
 ## Performance Results
 
-Measured via Metal HUD, 5-second capture (~130 frames), same editor scene, 5120×2888 resolution.
+Measured via Metal HUD, 5-second capture, same editor scene, 5120×2888 resolution.
 
 | Metric | Before (stock) | After | Change |
 |---|---|---|---|
-| **FPS (average)** | 18 | 27 | **+50%** |
-| **FPS (last frame)** | 20 | 30 | **+50%** |
-| **Frame Interval (average)** | 56.00ms | 38.89ms | **-31%** |
-| **Frame Interval (last)** | 50.00ms | 33.34ms | **-33%** |
+| **FPS (average)** | 23 | 36 | **+57%** |
+| **FPS (last frame)** | 30 | 60 | **+100%** |
+| **Frame Interval (average)** | 45.31ms | 29.86ms | **-34%** |
+| **Frame Interval (last)** | 33.34ms | 16.67ms | **-50%** |
 | **Compute Encoder Count** | 495 | 39 | **-92%** |
 | **Render Encoder Count** | 60 | 51 | **-15%** |
-| **"Clear Image" passes** | 1,818 | 0 | **eliminated*** |
+| **"Clear Image" passes** | 1,602 | 0 | **eliminated*** |
 | **"Frequent RT Change" insight** | present | gone | **eliminated** |
-| **Fragment GPU (avg)** | 21.87ms | 19.34ms | **-12%** |
-| **Fragment GPU (last)** | 33.29ms | 18.81ms | **-43%** |
-| **Compute GPU (avg)** | 22.36ms | 18.47ms | **-17%** |
-| **Command Buffer GPU (avg)** | 59.82ms | 42.30ms | **-29%** |
+| **Fragment GPU (avg)** | 15.83ms | 15.41ms | **-3%** |
+| **Compute GPU (avg)** | 16.04ms | 13.36ms | **-17%** |
+| **Command Buffer GPU (avg)** | 48.43ms | 32.93ms | **-32%** |
 
 The compute encoder count dropped from 495 to 39 (stage 1), and all measured clear-image passes in this scene were eliminated (stage 2). Eligible float-compatible 2D/2D-array/3D clears use compute; fallback clears (integer formats, multisample, cube) may still emit render passes. The remaining 39 compute encoders and 51 render encoders represent actual rendering work from Godot's draw graph — distinct render targets and compute passes that cannot be merged at the driver level.
 
