@@ -357,7 +357,12 @@ void MDCommandBuffer::clear_color_texture(RDD::TextureID p_texture, RDD::Texture
 		MTL::TextureType tex_type = src_tex->textureType();
 		bool is_multisample = (tex_type == MTL::TextureType2DMultisample || tex_type == MTL::TextureType2DMultisampleArray);
 		bool can_use_compute = (tex_type == MTL::TextureType2D || tex_type == MTL::TextureType2DArray || tex_type == MTL::TextureType3D);
-		if (!is_multisample && can_use_compute) {
+		// The compute clear kernels use texture*<float, access::write>, which is only
+		// valid for float, half, unorm and snorm formats. Integer formats require
+		// separate int/uint kernels; fall back to render clear for those.
+		MTLFormatType fmt_type = pf.getFormatType(src_tex->pixelFormat());
+		bool is_float_compatible = (fmt_type == MTLFormatType::ColorFloat || fmt_type == MTLFormatType::ColorHalf);
+		if (!is_multisample && can_use_compute && is_float_compatible) {
 			_clear_color_texture_compute(src_tex, p_color, p_subresources);
 			return;
 		}
@@ -372,6 +377,19 @@ void MDCommandBuffer::_clear_color_texture_compute(MTL::Texture *p_src_tex, cons
 	MDResourceCache &cache = device_driver->get_resource_cache();
 	MTL::ComputePipelineState *clear_pipeline = cache.get_clear_color_compute_pipeline_state(tex_type, &err);
 	ERR_FAIL_COND_MSG(err != nullptr || clear_pipeline == nullptr, "Failed to get clear color compute pipeline state.");
+
+	bool is_3d = tex_type == MTL::TextureType3D;
+	bool is_array = tex_type == MTL::TextureType2DArray || tex_type == MTL::TextureType2DMultisampleArray;
+
+	uint32_t mip_start = p_subresources.base_mipmap;
+	uint32_t mip_end = mip_start + p_subresources.mipmap_count;
+	uint32_t layer_start = is_3d ? 0 : p_subresources.base_layer;
+	uint32_t layer_count = p_subresources.layer_count;
+
+	// Validate mip range before opening an encoder to avoid corrupting command buffer state on error.
+	for (uint32_t mip = mip_start; mip < mip_end; mip++) {
+		ERR_FAIL_INDEX_MSG(mip, p_src_tex->mipmapLevelCount(), "mip level out of range");
+	}
 
 	// End any active encoder.
 	switch (type) {
@@ -398,17 +416,7 @@ void MDCommandBuffer::_clear_color_texture_compute(MTL::Texture *p_src_tex, cons
 	} clear_data = { { (float)p_color.r, (float)p_color.g, (float)p_color.b, (float)p_color.a } };
 	compute.encoder->setBytes(&clear_data, sizeof(ClearColorData), 0);
 
-	bool is_3d = tex_type == MTL::TextureType3D;
-	bool is_array = tex_type == MTL::TextureType2DArray || tex_type == MTL::TextureType2DMultisampleArray;
-
-	uint32_t mip_start = p_subresources.base_mipmap;
-	uint32_t mip_end = mip_start + p_subresources.mipmap_count;
-	uint32_t layer_start = is_3d ? 0 : p_subresources.base_layer;
-	uint32_t layer_count = p_subresources.layer_count;
-
 	for (uint32_t mip = mip_start; mip < mip_end; mip++) {
-		ERR_FAIL_INDEX_MSG(mip, p_src_tex->mipmapLevelCount(), "mip level out of range");
-
 		MTL::Size mip_size = mipmapLevelSizeFromTexture(p_src_tex, mip);
 
 		NS::Range level_range(mip, 1);
