@@ -548,6 +548,8 @@ public:
 
 private:
 	MTL::RenderCommandEncoder *get_new_render_encoder_with_descriptor(MTL::RenderPassDescriptor *p_desc);
+	void _clear_color_texture_compute(MTL::Texture *p_src_tex, const Color &p_color, const RDD::TextureSubresourceRange &p_subresources);
+	void _clear_color_texture_render(MTL::Texture *p_src_tex, const Color &p_color, const RDD::TextureSubresourceRange &p_subresources);
 
 public:
 	void resolve_texture(RDD::TextureID p_src_texture, RDD::TextureLayout p_src_texture_layout, uint32_t p_src_layer, uint32_t p_src_mipmap, RDD::TextureID p_dst_texture, RDD::TextureLayout p_dst_texture_layout, uint32_t p_dst_layer, uint32_t p_dst_mipmap) override;

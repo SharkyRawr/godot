@@ -349,64 +349,153 @@ void MDCommandBuffer::clear_color_texture(RDD::TextureID p_texture, RDD::Texture
 		ERR_FAIL_MSG("invalid: depth or stencil texture format");
 	}
 
+	if (!p_subresources.aspect.has_flag(RDD::TEXTURE_ASPECT_COLOR_BIT)) {
+		return;
+	}
+
+	if (src_tex->usage() & MTL::TextureUsageShaderWrite) {
+		MTL::TextureType tex_type = src_tex->textureType();
+		bool is_multisample = (tex_type == MTL::TextureType2DMultisample || tex_type == MTL::TextureType2DMultisampleArray);
+		bool can_use_compute = (tex_type == MTL::TextureType2D || tex_type == MTL::TextureType2DArray || tex_type == MTL::TextureType3D);
+		if (!is_multisample && can_use_compute) {
+			_clear_color_texture_compute(src_tex, p_color, p_subresources);
+			return;
+		}
+	}
+	_clear_color_texture_render(src_tex, p_color, p_subresources);
+}
+
+void MDCommandBuffer::_clear_color_texture_compute(MTL::Texture *p_src_tex, const Color &p_color, const RDD::TextureSubresourceRange &p_subresources) {
+	MTL::TextureType tex_type = p_src_tex->textureType();
+
+	NS::Error *err = nullptr;
+	MDResourceCache &cache = device_driver->get_resource_cache();
+	MTL::ComputePipelineState *clear_pipeline = cache.get_clear_color_compute_pipeline_state(tex_type, &err);
+	ERR_FAIL_COND_MSG(err != nullptr || clear_pipeline == nullptr, "Failed to get clear color compute pipeline state.");
+
+	// End any active encoder.
+	switch (type) {
+		case MDCommandBufferStateType::Render:
+			render_end_pass();
+			break;
+		case MDCommandBufferStateType::Compute:
+			_end_compute_dispatch();
+			break;
+		case MDCommandBufferStateType::Blit:
+			_end_blit();
+			break;
+		default:
+			break;
+	}
+
+	type = MDCommandBufferStateType::Compute;
+	compute.encoder = NS::RetainPtr(command_buffer()->computeCommandEncoder(MTL::DispatchTypeConcurrent));
+	_encode_barrier(compute.encoder.get());
+	compute.encoder->setComputePipelineState(clear_pipeline);
+
+	struct ClearColorData {
+		float color[4];
+	} clear_data = { { (float)p_color.r, (float)p_color.g, (float)p_color.b, (float)p_color.a } };
+	compute.encoder->setBytes(&clear_data, sizeof(ClearColorData), 0);
+
+	bool is_3d = tex_type == MTL::TextureType3D;
+	bool is_array = tex_type == MTL::TextureType2DArray || tex_type == MTL::TextureType2DMultisampleArray;
+
+	uint32_t mip_start = p_subresources.base_mipmap;
+	uint32_t mip_end = mip_start + p_subresources.mipmap_count;
+	uint32_t layer_start = is_3d ? 0 : p_subresources.base_layer;
+	uint32_t layer_count = p_subresources.layer_count;
+
+	for (uint32_t mip = mip_start; mip < mip_end; mip++) {
+		ERR_FAIL_INDEX_MSG(mip, p_src_tex->mipmapLevelCount(), "mip level out of range");
+
+		MTL::Size mip_size = mipmapLevelSizeFromTexture(p_src_tex, mip);
+
+		NS::Range level_range(mip, 1);
+		NS::Range slice_range(layer_start, is_3d ? 1 : layer_count);
+
+		NS::SharedPtr<MTL::Texture> view = NS::TransferPtr(
+				p_src_tex->newTextureView(p_src_tex->pixelFormat(), tex_type, level_range, slice_range));
+		ERR_CONTINUE_MSG(view.get() == nullptr, "Failed to create texture view for compute clear.");
+
+		compute.encoder->setTexture(view.get(), 0);
+
+		MTL::Size threadgroup_size;
+		MTL::Size grid_size;
+		if (is_3d) {
+			uint32_t depth = mip_size.depth;
+			threadgroup_size = MTL::Size(8, 8, 4);
+			grid_size = MTL::Size(mip_size.width, mip_size.height, depth);
+		} else if (is_array) {
+			threadgroup_size = MTL::Size(8, 8, 1);
+			grid_size = MTL::Size(mip_size.width, mip_size.height, layer_count);
+		} else {
+			threadgroup_size = MTL::Size(8, 8, 1);
+			grid_size = MTL::Size(mip_size.width, mip_size.height, 1);
+		}
+		compute.encoder->dispatchThreads(grid_size, threadgroup_size);
+	}
+
+	_end_compute_dispatch();
+}
+
+void MDCommandBuffer::_clear_color_texture_render(MTL::Texture *p_src_tex, const Color &p_color, const RDD::TextureSubresourceRange &p_subresources) {
 	NS::SharedPtr<MTL::RenderPassDescriptor> desc = NS::TransferPtr(MTL::RenderPassDescriptor::alloc()->init());
 
-	if (p_subresources.aspect.has_flag(RDD::TEXTURE_ASPECT_COLOR_BIT)) {
-		MTL::RenderPassColorAttachmentDescriptor *caDesc = desc->colorAttachments()->object(0);
-		caDesc->setTexture(src_tex);
-		caDesc->setLoadAction(MTL::LoadActionClear);
-		caDesc->setStoreAction(MTL::StoreActionStore);
-		caDesc->setClearColor(MTL::ClearColor(p_color.r, p_color.g, p_color.b, p_color.a));
+	MTL::RenderPassColorAttachmentDescriptor *caDesc = desc->colorAttachments()->object(0);
+	caDesc->setTexture(p_src_tex);
+	caDesc->setLoadAction(MTL::LoadActionClear);
+	caDesc->setStoreAction(MTL::StoreActionStore);
+	caDesc->setClearColor(MTL::ClearColor(p_color.r, p_color.g, p_color.b, p_color.a));
 
-		// Extract the mipmap levels that are to be updated.
-		uint32_t mipLvlStart = p_subresources.base_mipmap;
-		uint32_t mipLvlCnt = p_subresources.mipmap_count;
-		uint32_t mipLvlEnd = mipLvlStart + mipLvlCnt;
+	// Extract the mipmap levels that are to be updated.
+	uint32_t mipLvlStart = p_subresources.base_mipmap;
+	uint32_t mipLvlCnt = p_subresources.mipmap_count;
+	uint32_t mipLvlEnd = mipLvlStart + mipLvlCnt;
 
-		uint32_t levelCount = src_tex->mipmapLevelCount();
+	uint32_t levelCount = p_src_tex->mipmapLevelCount();
 
-		// Extract the cube or array layers (slices) that are to be updated.
-		bool is3D = src_tex->textureType() == MTL::TextureType3D;
-		uint32_t layerStart = is3D ? 0 : p_subresources.base_layer;
-		uint32_t layerCnt = p_subresources.layer_count;
-		uint32_t layerEnd = layerStart + layerCnt;
+	// Extract the cube or array layers (slices) that are to be updated.
+	bool is3D = p_src_tex->textureType() == MTL::TextureType3D;
+	uint32_t layerStart = is3D ? 0 : p_subresources.base_layer;
+	uint32_t layerCnt = p_subresources.layer_count;
+	uint32_t layerEnd = layerStart + layerCnt;
 
-		const MetalFeatures &features = device_driver->get_device_properties().features;
+	const MetalFeatures &features = device_driver->get_device_properties().features;
 
-		// Iterate across mipmap levels and layers, and perform and empty render to clear each.
-		for (uint32_t mipLvl = mipLvlStart; mipLvl < mipLvlEnd; mipLvl++) {
-			ERR_FAIL_INDEX_MSG(mipLvl, levelCount, "mip level out of range");
+	// Iterate across mipmap levels and layers, and perform and empty render to clear each.
+	for (uint32_t mipLvl = mipLvlStart; mipLvl < mipLvlEnd; mipLvl++) {
+		ERR_FAIL_INDEX_MSG(mipLvl, levelCount, "mip level out of range");
 
-			caDesc->setLevel(mipLvl);
+		caDesc->setLevel(mipLvl);
 
-			// If a 3D image, we need to get the depth for each level.
+		// If a 3D image, we need to get the depth for each level.
+		if (is3D) {
+			layerCnt = mipmapLevelSizeFromTexture(p_src_tex, mipLvl).depth;
+			layerEnd = layerStart + layerCnt;
+		}
+
+		if ((features.layeredRendering && p_src_tex->sampleCount() == 1) || features.multisampleLayeredRendering) {
+			// We can clear all layers at once.
 			if (is3D) {
-				layerCnt = mipmapLevelSizeFromTexture(src_tex, mipLvl).depth;
-				layerEnd = layerStart + layerCnt;
+				caDesc->setDepthPlane(layerStart);
+			} else {
+				caDesc->setSlice(layerStart);
 			}
-
-			if ((features.layeredRendering && src_tex->sampleCount() == 1) || features.multisampleLayeredRendering) {
-				// We can clear all layers at once.
+			desc->setRenderTargetArrayLength(layerCnt);
+			MTL::RenderCommandEncoder *enc = get_new_render_encoder_with_descriptor(desc.get());
+			enc->setLabel(MTLSTR("Clear Image"));
+			enc->endEncoding();
+		} else {
+			for (uint32_t layer = layerStart; layer < layerEnd; layer++) {
 				if (is3D) {
-					caDesc->setDepthPlane(layerStart);
+					caDesc->setDepthPlane(layer);
 				} else {
-					caDesc->setSlice(layerStart);
+					caDesc->setSlice(layer);
 				}
-				desc->setRenderTargetArrayLength(layerCnt);
 				MTL::RenderCommandEncoder *enc = get_new_render_encoder_with_descriptor(desc.get());
 				enc->setLabel(MTLSTR("Clear Image"));
 				enc->endEncoding();
-			} else {
-				for (uint32_t layer = layerStart; layer < layerEnd; layer++) {
-					if (is3D) {
-						caDesc->setDepthPlane(layer);
-					} else {
-						caDesc->setSlice(layer);
-					}
-					MTL::RenderCommandEncoder *enc = get_new_render_encoder_with_descriptor(desc.get());
-					enc->setLabel(MTLSTR("Clear Image"));
-					enc->endEncoding();
-				}
 			}
 		}
 	}

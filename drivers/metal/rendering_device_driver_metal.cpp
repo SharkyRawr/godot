@@ -388,6 +388,13 @@ RDD::TextureID RenderingDeviceDriverMetal::texture_create(const TextureFormat &p
 			can_be_attachment && no_swizzle) {
 		// Per MoltenVK, can be cleared as a render attachment.
 		usage |= MTL::TextureUsageRenderTarget;
+		// Also enable ShaderWrite so the Metal driver can clear these textures via a
+		// compute dispatch instead of creating per-mip render encoders, which is expensive.
+		// On Apple GPUs there is no performance penalty for this.
+		// Multisample textures are excluded as they cannot be written from compute kernels.
+		if (flags::any(format_caps, kMTLFmtCapsColorAtt) && p_format.samples == TEXTURE_SAMPLES_1) {
+			usage |= MTL::TextureUsageShaderWrite;
+		}
 	}
 	if (p_format.usage_bits & TEXTURE_USAGE_CAN_COPY_FROM_BIT) {
 		// Covered by blits.
