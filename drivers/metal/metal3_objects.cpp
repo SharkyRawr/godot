@@ -216,15 +216,14 @@ void MDCommandBuffer::pipeline_barrier(BitField<RDD::PipelineStageBits> p_src_st
 void MDCommandBuffer::bind_pipeline(RDD::PipelineID p_pipeline) {
 	MDPipeline *p = (MDPipeline *)(p_pipeline.id);
 
-	// End current encoder if it is a compute encoder or blit encoder,
-	// as they do not have a defined end boundary in the RDD like render.
-	if (type == MDCommandBufferStateType::Compute) {
-		_end_compute_dispatch();
-	} else if (type == MDCommandBufferStateType::Blit) {
-		_end_blit();
-	}
-
 	if (p->type == MDPipelineType::Render) {
+		// End current encoder if transitioning from compute or blit to render.
+		if (type == MDCommandBufferStateType::Compute) {
+			_end_compute_dispatch();
+		} else if (type == MDCommandBufferStateType::Blit) {
+			_end_blit();
+		}
+
 		DEV_ASSERT(type == MDCommandBufferStateType::Render);
 		MDRenderPipeline *rp = (MDRenderPipeline *)p;
 
@@ -260,8 +259,18 @@ void MDCommandBuffer::bind_pipeline(RDD::PipelineID p_pipeline) {
 			render.pipeline = rp;
 		}
 	} else if (p->type == MDPipelineType::Compute) {
-		DEV_ASSERT(type == MDCommandBufferStateType::None);
-		type = MDCommandBufferStateType::Compute;
+		// End blit encoder if transitioning from blit to compute.
+		// Note: Do NOT end the compute encoder here when transitioning from compute to compute.
+		// Reusing the compute encoder across pipeline changes avoids creating a new
+		// MTLComputeCommandEncoder for every pipeline switch, which is extremely expensive.
+		if (type == MDCommandBufferStateType::Blit) {
+			_end_blit();
+		}
+
+		if (type != MDCommandBufferStateType::Compute) {
+			DEV_ASSERT(type == MDCommandBufferStateType::None);
+			type = MDCommandBufferStateType::Compute;
+		}
 
 		if (compute.pipeline != p) {
 			compute.dirty.set_flag(ComputeState::DIRTY_PIPELINE);
@@ -1392,8 +1401,13 @@ void MDCommandBuffer::ComputeState::end_encoding() {
 
 void MDCommandBuffer::_compute_set_dirty_state() {
 	if (compute.dirty.has_flag(ComputeState::DIRTY_PIPELINE)) {
-		compute.encoder = NS::RetainPtr(command_buffer()->computeCommandEncoder(MTL::DispatchTypeConcurrent));
-		_encode_barrier(compute.encoder.get());
+		if (compute.encoder.get() == nullptr) {
+			// Only create the encoder once. It will be reused across pipeline changes,
+			// which avoids the overhead of creating a new MTLComputeCommandEncoder for
+			// every pipeline switch (each endEncoding/beginEncoding pair is expensive).
+			compute.encoder = NS::RetainPtr(command_buffer()->computeCommandEncoder(MTL::DispatchTypeConcurrent));
+			_encode_barrier(compute.encoder.get());
+		}
 		compute.encoder->setComputePipelineState(compute.pipeline->state.get());
 	}
 
