@@ -257,6 +257,7 @@ private:
 		NS::SharedPtr<MTL::DepthStencilState> none;
 	} clear_depth_stencil_state;
 
+	// Compute clear pipelines, lazily compiled and cached per texture type (2D / 2D-array / 3D).
 	NS::SharedPtr<MTL::ComputePipelineState> clear_color_compute_pipeline;
 	NS::SharedPtr<MTL::ComputePipelineState> clear_color_2d_array_pipeline;
 	NS::SharedPtr<MTL::ComputePipelineState> clear_color_3d_pipeline;

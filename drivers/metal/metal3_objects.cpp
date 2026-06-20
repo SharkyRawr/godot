@@ -353,6 +353,10 @@ void MDCommandBuffer::clear_color_texture(RDD::TextureID p_texture, RDD::Texture
 		return;
 	}
 
+	// Prefer the compute-based clear path when eligible: it clears every mip level from a
+	// single compute encoder, avoiding the per-mip render pass encoders the render path
+	// creates (each of which forces a tile store/load cycle on Apple's TBDR GPUs).
+	// Eligibility mirrors the TextureUsageShaderWrite flag set at texture creation time.
 	if (src_tex->usage() & MTL::TextureUsageShaderWrite) {
 		MTL::TextureType tex_type = src_tex->textureType();
 		bool is_multisample = (tex_type == MTL::TextureType2DMultisample || tex_type == MTL::TextureType2DMultisampleArray);
@@ -367,9 +371,14 @@ void MDCommandBuffer::clear_color_texture(RDD::TextureID p_texture, RDD::Texture
 			return;
 		}
 	}
+	// Fallback: integer formats, multisample, cube, 1D and other unsupported types.
 	_clear_color_texture_render(src_tex, p_color, p_subresources);
 }
 
+// Clears a color texture by dispatching a compute kernel that writes the clear color
+// to every texel via an access::write texture view. All requested mip levels are
+// cleared from a single compute encoder. Unlike render-pass clears, this does not
+// trigger a tile store/load cycle at endEncoding() on Apple's TBDR GPUs.
 void MDCommandBuffer::_clear_color_texture_compute(MTL::Texture *p_src_tex, const Color &p_color, const RDD::TextureSubresourceRange &p_subresources) {
 	MTL::TextureType tex_type = p_src_tex->textureType();
 
@@ -391,7 +400,8 @@ void MDCommandBuffer::_clear_color_texture_compute(MTL::Texture *p_src_tex, cons
 		ERR_FAIL_INDEX_MSG(mip, p_src_tex->mipmapLevelCount(), "mip level out of range");
 	}
 
-	// End any active encoder.
+	// The clear kernel has no RDD::PipelineID, so manage the encoder directly instead of
+	// going through bind_pipeline(). End any active encoder first to preserve ordering.
 	switch (type) {
 		case MDCommandBufferStateType::Render:
 			render_end_pass();
@@ -416,6 +426,9 @@ void MDCommandBuffer::_clear_color_texture_compute(MTL::Texture *p_src_tex, cons
 	} clear_data = { { (float)p_color.r, (float)p_color.g, (float)p_color.b, (float)p_color.a } };
 	compute.encoder->setBytes(&clear_data, sizeof(ClearColorData), 0);
 
+	// Dispatch once per mip level. Each level has different dimensions, so the grid size
+	// differs per dispatch; a texture view scoped to a single level is bound for the write.
+	// dispatchThreads is used so Metal rounds the grid up to a whole number of threadgroups.
 	for (uint32_t mip = mip_start; mip < mip_end; mip++) {
 		MTL::Size mip_size = mipmapLevelSizeFromTexture(p_src_tex, mip);
 
@@ -428,6 +441,7 @@ void MDCommandBuffer::_clear_color_texture_compute(MTL::Texture *p_src_tex, cons
 
 		compute.encoder->setTexture(view.get(), 0);
 
+		// Threadgroup size: 8x8x1 for 2D / 2D-array, 8x8x4 for 3D.
 		MTL::Size threadgroup_size;
 		MTL::Size grid_size;
 		if (is_3d) {
@@ -447,6 +461,9 @@ void MDCommandBuffer::_clear_color_texture_compute(MTL::Texture *p_src_tex, cons
 	_end_compute_dispatch();
 }
 
+// Fallback clear path: opens a render pass with LoadActionClear for each mip level
+// (and each layer when layered rendering is unavailable). Used whenever the compute
+// path is not eligible — integer formats, multisample, cube and 1D textures.
 void MDCommandBuffer::_clear_color_texture_render(MTL::Texture *p_src_tex, const Color &p_color, const RDD::TextureSubresourceRange &p_subresources) {
 	NS::SharedPtr<MTL::RenderPassDescriptor> desc = NS::TransferPtr(MTL::RenderPassDescriptor::alloc()->init());
 

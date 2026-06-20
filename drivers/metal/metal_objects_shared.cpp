@@ -291,9 +291,16 @@ fragment void fullscreenNoopFrag(float4 gl_FragCoord [[position]]) {
 	return state;
 }
 
+// Compiles the embedded MSL source containing the three compute clear kernels and returns
+// the pipeline state for the kernel selected by p_func_name. The result is cached per
+// texture type by MDResourceCache, so this only runs once per type.
+// The kernels target texture*<float, access::write>, so they only support float-compatible
+// formats (float, half, unorm, snorm). See clear_color_texture() for the eligibility check.
 NS::SharedPtr<MTL::ComputePipelineState> MDResourceFactory::new_clear_color_compute_pipeline_state(const char *p_func_name, NS::Error **p_error) {
 	NS::SharedPtr<NS::AutoreleasePool> pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
 
+	// One compute kernel per texture type, each writing the clear color to every texel.
+	// Bounds checks guard against the grid rounding past the texture dimensions.
 	static const char *msl = R"(
 #include <metal_stdlib>
 using namespace metal;
@@ -395,6 +402,9 @@ MTL::DepthStencilState *MDResourceCache::get_depth_stencil_state(bool p_use_dept
 	}
 }
 
+// Returns the cached clear-color compute pipeline for the given texture type, compiling
+// it on first request. Multisample texture types are mapped to a pipeline but are never
+// requested from the clear path (it excludes them up front in clear_color_texture()).
 MTL::ComputePipelineState *MDResourceCache::get_clear_color_compute_pipeline_state(MTL::TextureType p_type, NS::Error **p_error) {
 	NS::SharedPtr<MTL::ComputePipelineState> *slot = nullptr;
 	const char *func_name = nullptr;
@@ -410,6 +420,7 @@ MTL::ComputePipelineState *MDResourceCache::get_clear_color_compute_pipeline_sta
 			func_name = "clear_color_2d_array";
 			break;
 		default:
+			// TextureType2D (and any unmapped type) uses the plain 2D kernel.
 			slot = &clear_color_compute_pipeline;
 			func_name = "clear_color_2d";
 			break;
