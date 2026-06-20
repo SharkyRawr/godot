@@ -2,14 +2,16 @@
 
 ## Summary
 
-Two optimizations to the Metal rendering device driver that eliminate excessive command encoder creation, which was the primary CPU and GPU bottleneck on Apple's tile-based deferred rendering (TBDR) GPUs.
+Two optimizations to the Metal rendering device driver that eliminate excessive command encoder creation, which was the primary CPU and GPU bottleneck on my Macbook Air M1 and possibly others.
 
-- **Stage 1:** Reuse a single compute command encoder across pipeline changes instead of destroying and recreating it for every dispatch.
-- **Stage 2:** Replace per-mip render-pass-based texture clears with compute kernel dispatches, eliminating the creation of per-mip render command encoders entirely.
+- **Change 1:** Reuse a single compute command encoder across pipeline changes instead of destroying and recreating it for every dispatch.
+- **Change 2:** Replace per-mip render-pass-based texture clears with compute kernel dispatches, eliminating the creation of per-mip render command encoders entirely.
 
-## Problem
+> Note: The code changes and this pull request have been made with the help of AI assistance.
 
-Metal HUD profiling of the editor at 5120×2888 revealed that the GPU was bottlenecked by encoder overhead rather than actual rendering work:
+## Problem details
+
+Metal HUD profiling of the editor at 5120×2888 (HiDPI external 4K monitor) revealed that the GPU was bottlenecked by encoder overhead rather than actual rendering work:
 
 - **495 compute encoders per frame**, each doing 0.00–0.01ms of GPU work. Every `endEncoding()`/`beginEncoding()` pair on a TBDR GPU forces a tile store/load cycle through memory — pure overhead.
 - **60 render encoders per frame**, with ~9 of them being "Clear Image" passes created solely to clear texture subresources. Each clear of a multi-mip texture created one render encoder per mip level per layer.
@@ -18,7 +20,7 @@ Metal HUD profiling of the editor at 5120×2888 revealed that the GPU was bottle
 
 ## Changes
 
-### Stage 1: Compute Encoder Reuse
+### Change 1: Compute Encoder Reuse
 
 **Files:** `drivers/metal/metal3_objects.cpp`, `drivers/metal/metal3_objects.h`
 
@@ -28,7 +30,7 @@ Previously, `bind_pipeline()` called `_end_compute_dispatch()` whenever a new co
 
 The encoder is still ended when transitioning to a different encoder type (render or blit), preserving correct execution ordering.
 
-### Stage 2: Compute-Based Texture Clearing
+### Change 2: Compute-Based Texture Clearing
 
 **Files:** `drivers/metal/metal3_objects.cpp`, `drivers/metal/metal3_objects.h`, `drivers/metal/metal_objects_shared.cpp`, `drivers/metal/metal_objects_shared.h`, `drivers/metal/rendering_device_driver_metal.cpp`
 
@@ -54,7 +56,7 @@ The encoder is still ended when transitioning to a different encoder type (rende
 
 **Threadgroup sizes:** 8×8×1 for 2D and 2D array textures, 8×8×4 for 3D textures.
 
-## Design Decisions
+## Decisions
 
 ### Why compute instead of render passes for clearing?
 
@@ -86,14 +88,12 @@ Metal compute kernels cannot write to multisample textures (`texture2d_ms`) via 
 
 ## Performance Results
 
-Measured via Metal HUD, 5-second capture, same editor scene, 5120×2888 resolution.
+Measured via Metal HUD, 5-second capture, exact same editor scene, 5120×2888 resolution.
 
 | Metric | Before (stock) | After | Change |
 |---|---|---|---|
 | **FPS (average)** | 23 | 36 | **+57%** |
-| **FPS (last frame)** | 30 | 60 | **+100%** |
 | **Frame Interval (average)** | 45.31ms | 29.86ms | **-34%** |
-| **Frame Interval (last)** | 33.34ms | 16.67ms | **-50%** |
 | **Compute Encoder Count** | 495 | 39 | **-92%** |
 | **Render Encoder Count** | 60 | 51 | **-15%** |
 | **"Clear Image" passes** | 1,602 | 0 | **eliminated*** |
@@ -102,7 +102,7 @@ Measured via Metal HUD, 5-second capture, same editor scene, 5120×2888 resoluti
 | **Compute GPU (avg)** | 16.04ms | 13.36ms | **-17%** |
 | **Command Buffer GPU (avg)** | 48.43ms | 32.93ms | **-32%** |
 
-The compute encoder count dropped from 495 to 39 (stage 1), and all measured clear-image passes in this scene were eliminated (stage 2). Eligible float-compatible 2D/2D-array/3D clears use compute; fallback clears (integer formats, multisample, cube) may still emit render passes. The remaining 39 compute encoders and 51 render encoders represent actual rendering work from Godot's draw graph — distinct render targets and compute passes that cannot be merged at the driver level.
+The compute encoder count dropped from 495 to 39 (change 1), and all measured clear-image passes in this scene were eliminated (change 2). Eligible float-compatible 2D/2D-array/3D clears use compute; fallback clears (integer formats, multisample, cube) may still emit render passes. The remaining 39 compute encoders and 51 render encoders represent actual rendering work from Godot's draw graph — distinct render targets and compute passes that cannot be merged at the driver level.
 
 \* No "Clear Image" labeled encoders appeared in the tested scene. Textures that fall back to the render clear path (integer formats, multisample, unsupported texture types) would still emit them if cleared.
 
