@@ -374,6 +374,17 @@ RDD::TextureID RenderingDeviceDriverMetal::texture_create(const TextureFormat &p
 			can_be_attachment && no_swizzle) {
 		// Per MoltenVK, can be cleared as a render attachment.
 		usage |= MTL::TextureUsageRenderTarget;
+		// Also enable ShaderWrite so the Metal driver can clear these textures via a
+		// compute dispatch instead of creating per-mip render encoders, which is expensive.
+		// On Apple GPUs there is no performance penalty for this.
+		// Only enabled for float-compatible formats (ColorFloat/ColorHalf), which covers
+		// unorm, snorm, sRGB and float — the only types the compute clear kernels support.
+		// Multisample textures are excluded as they cannot be written from compute kernels.
+		MTLFormatType fmt_type = formats.getFormatType(desc->pixelFormat());
+		bool float_compatible = (fmt_type == MTLFormatType::ColorFloat || fmt_type == MTLFormatType::ColorHalf);
+		if (float_compatible && flags::all(format_caps, kMTLFmtCapsWrite | kMTLFmtCapsColorAtt) && p_format.samples == TEXTURE_SAMPLES_1) {
+			usage |= MTL::TextureUsageShaderWrite;
+		}
 	}
 	if (p_format.usage_bits & TEXTURE_USAGE_CAN_COPY_FROM_BIT) {
 		// Covered by blits.

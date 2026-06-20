@@ -291,6 +291,67 @@ fragment void fullscreenNoopFrag(float4 gl_FragCoord [[position]]) {
 	return state;
 }
 
+// Compiles the embedded MSL source containing the three compute clear kernels and returns
+// the pipeline state for the kernel selected by p_func_name. The result is cached per
+// texture type by MDResourceCache, so this only runs once per type.
+// The kernels target texture*<float, access::write>, so they only support float-compatible
+// formats (float, half, unorm, snorm). See clear_color_texture() for the eligibility check.
+NS::SharedPtr<MTL::ComputePipelineState> MDResourceFactory::new_clear_color_compute_pipeline_state(const char *p_func_name, NS::Error **p_error) {
+	NS::SharedPtr<NS::AutoreleasePool> pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+
+	// One compute kernel per texture type, each writing the clear color to every texel.
+	// Bounds checks guard against the grid rounding past the texture dimensions.
+	static const char *msl = R"(
+#include <metal_stdlib>
+using namespace metal;
+
+kernel void clear_color_2d(texture2d<float, access::write> dst [[texture(0)]],
+                           constant float4& clear_color [[buffer(0)]],
+                           uint2 pos [[thread_position_in_grid]]) {
+    if (pos.x < dst.get_width() && pos.y < dst.get_height()) {
+        dst.write(clear_color, pos);
+    }
+}
+
+kernel void clear_color_2d_array(texture2d_array<float, access::write> dst [[texture(0)]],
+                                 constant float4& clear_color [[buffer(0)]],
+                                 uint3 pos [[thread_position_in_grid]]) {
+    if (pos.x < dst.get_width() && pos.y < dst.get_height() && pos.z < dst.get_array_size()) {
+        dst.write(clear_color, pos.xy, pos.z);
+    }
+}
+
+kernel void clear_color_3d(texture3d<float, access::write> dst [[texture(0)]],
+                           constant float4& clear_color [[buffer(0)]],
+                           uint3 pos [[thread_position_in_grid]]) {
+    if (pos.x < dst.get_width() && pos.y < dst.get_height() && pos.z < dst.get_depth()) {
+        dst.write(clear_color, pos);
+    }
+}
+)";
+
+	NS::SharedPtr<MTL::CompileOptions> options = NS::TransferPtr(MTL::CompileOptions::alloc()->init());
+	NS::Error *err = nullptr;
+	NS::SharedPtr<MTL::Library> mtlLib = NS::TransferPtr(device->newLibrary(NS::String::string(msl, NS::UTF8StringEncoding), options.get(), &err));
+	if (err) {
+		if (p_error != nullptr) {
+			*p_error = err;
+		}
+		return {};
+	}
+
+	if (mtlLib.get() == nullptr) {
+		return {};
+	}
+
+	NS::SharedPtr<MTL::Function> func = NS::TransferPtr(mtlLib->newFunction(NS::String::string(p_func_name, NS::UTF8StringEncoding)));
+	NS::SharedPtr<MTL::ComputePipelineState> state = NS::TransferPtr(device->newComputePipelineState(func.get(), &err));
+	if (err && p_error != nullptr) {
+		*p_error = err;
+	}
+	return state;
+}
+
 #pragma mark - Resource Cache
 
 MTL::RenderPipelineState *MDResourceCache::get_clear_render_pipeline_state(ClearAttKey &p_key, NS::Error **p_error) {
@@ -339,6 +400,36 @@ MTL::DepthStencilState *MDResourceCache::get_depth_stencil_state(bool p_use_dept
 		}
 		return clear_depth_stencil_state.none.get();
 	}
+}
+
+// Returns the cached clear-color compute pipeline for the given texture type, compiling
+// it on first request. Multisample texture types are mapped to a pipeline but are never
+// requested from the clear path (it excludes them up front in clear_color_texture()).
+MTL::ComputePipelineState *MDResourceCache::get_clear_color_compute_pipeline_state(MTL::TextureType p_type, NS::Error **p_error) {
+	NS::SharedPtr<MTL::ComputePipelineState> *slot = nullptr;
+	const char *func_name = nullptr;
+
+	switch (p_type) {
+		case MTL::TextureType3D:
+			slot = &clear_color_3d_pipeline;
+			func_name = "clear_color_3d";
+			break;
+		case MTL::TextureType2DArray:
+		case MTL::TextureType2DMultisampleArray:
+			slot = &clear_color_2d_array_pipeline;
+			func_name = "clear_color_2d_array";
+			break;
+		default:
+			// TextureType2D (and any unmapped type) uses the plain 2D kernel.
+			slot = &clear_color_compute_pipeline;
+			func_name = "clear_color_2d";
+			break;
+	}
+
+	if (!*slot) {
+		*slot = resource_factory->new_clear_color_compute_pipeline_state(func_name, p_error);
+	}
+	return slot->get();
 }
 
 #pragma mark - Render Pass Types
