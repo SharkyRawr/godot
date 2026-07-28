@@ -1,7 +1,23 @@
 name: 🍎 macOS Builds
 on:
   workflow_call:
+    inputs:
+      editor:
+        type: boolean
+        default: false
+      template:
+        type: boolean
+        default: false
   workflow_dispatch:
+    inputs:
+      editor:
+        description: Build the editor
+        type: boolean
+        default: true
+      template:
+        description: Build the template
+        type: boolean
+        default: false
 
 # Global Settings
 env:
@@ -11,24 +27,15 @@ env:
 
 jobs:
   build-macos:
+    if: inputs.editor || inputs.template
     # From https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job#choosing-github-hosted-runners
     runs-on: macos-26
-    name: ${{ matrix.name }}
+    name: ${{ matrix.target == 'editor' && 'Editor (target=editor)' || 'Template (target=template_release)' }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: Editor (target=editor)
-            cache-name: macos-editor
-            target: editor
-            bin: ./bin/godot.macos.editor.universal
-
-          - name: Template (target=template_release)
-            cache-name: macos-template
-            target: template_release
-            scons-flags: debug_symbols=no
-            bin: ./bin/godot.macos.template_release.universal
+        target: ${{ fromJSON(inputs.editor && inputs.template && '["editor","template_release"]' || inputs.editor && '["editor"]' || '["template_release"]') }}
 
     steps:
       - name: Checkout
@@ -39,7 +46,7 @@ jobs:
       - name: Restore Godot build cache
         uses: ./.github/actions/godot-cache-restore
         with:
-          cache-name: ${{ matrix.cache-name }}
+          cache-name: ${{ matrix.target == 'editor' && 'macos-editor' || 'macos-template' }}
         continue-on-error: true
 
       - name: Setup Python and SCons
@@ -82,21 +89,21 @@ jobs:
         uses: ./.github/actions/godot-build
         with:
           # Silence warning about Metal not being supported in x86_64 builds using `metal=no`.
-          scons-flags: ${{ env.SCONS_FLAGS }} ${{ matrix.scons-flags }} arch=x86_64 vulkan=${{ steps.vulkan-sdk.outputs.VULKAN_ENABLED }} accesskit=${{ steps.accesskit-sdk.outputs.ACCESSKIT_ENABLED }} angle=${{ steps.angle-sdk.outputs.ANGLE_ENABLED }} metal=no
+          scons-flags: ${{ env.SCONS_FLAGS }} ${{ matrix.target == 'editor' && '' || 'debug_symbols=no' }} arch=x86_64 vulkan=${{ steps.vulkan-sdk.outputs.VULKAN_ENABLED }} accesskit=${{ steps.accesskit-sdk.outputs.ACCESSKIT_ENABLED }} angle=${{ steps.angle-sdk.outputs.ANGLE_ENABLED }} metal=no
           platform: macos
           target: ${{ matrix.target }}
 
       - name: Compilation (arm64)
         uses: ./.github/actions/godot-build
         with:
-          scons-flags: ${{ env.SCONS_FLAGS }} ${{ matrix.scons-flags }} arch=arm64 vulkan=${{ steps.vulkan-sdk.outputs.VULKAN_ENABLED }} accesskit=${{ steps.accesskit-sdk.outputs.ACCESSKIT_ENABLED }} angle=${{ steps.angle-sdk.outputs.ANGLE_ENABLED }}
+          scons-flags: ${{ env.SCONS_FLAGS }} ${{ matrix.target == 'editor' && '' || 'debug_symbols=no' }} arch=arm64 vulkan=${{ steps.vulkan-sdk.outputs.VULKAN_ENABLED }} accesskit=${{ steps.accesskit-sdk.outputs.ACCESSKIT_ENABLED }} angle=${{ steps.angle-sdk.outputs.ANGLE_ENABLED }}
           platform: macos
           target: ${{ matrix.target }}
 
       - name: Save Godot build cache
         uses: ./.github/actions/godot-cache-save
         with:
-          cache-name: ${{ matrix.cache-name }}
+          cache-name: ${{ matrix.target == 'editor' && 'macos-editor' || 'macos-template' }}
         continue-on-error: true
 
       - name: Prepare artifact
@@ -110,10 +117,10 @@ jobs:
       - name: Upload artifact
         uses: ./.github/actions/upload-artifact
         with:
-          name: ${{ matrix.cache-name }}
+          name: ${{ matrix.target == 'editor' && 'macos-editor' || 'macos-template' }}
 
       - name: Unit tests
         run: |
-          ${{ matrix.bin }} --version
-          ${{ matrix.bin }} --help
-          ${{ matrix.bin }} --test --force-colors
+          ./bin/godot.macos.${{ matrix.target }}.universal --version
+          ./bin/godot.macos.${{ matrix.target }}.universal --help
+          ./bin/godot.macos.${{ matrix.target }}.universal --test --force-colors

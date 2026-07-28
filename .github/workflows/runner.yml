@@ -1,5 +1,39 @@
 name: 🔗 GHA
-on: [push, pull_request, merge_group, workflow_dispatch]
+on:
+  workflow_dispatch:
+    inputs:
+      android:
+        description: Build Android targets
+        type: boolean
+        default: false
+      ios:
+        description: Build the iOS template
+        type: boolean
+        default: false
+      linux:
+        description: Build Linux targets
+        type: boolean
+        default: false
+      macos:
+        description: Build the macOS editor
+        type: boolean
+        default: false
+      macos_template:
+        description: Build the macOS template
+        type: boolean
+        default: false
+      windows:
+        description: Build Windows targets
+        type: boolean
+        default: false
+      wasm64:
+        description: Build the threaded wasm64 template
+        type: boolean
+        default: false
+      wasm32:
+        description: Build the non-threaded wasm32 template
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}|${{ github.ref_name }}
@@ -9,7 +43,6 @@ jobs:
   # First stage: Only static checks, fast and prevent expensive builds from running.
 
   static-checks:
-    if: ${{ !vars.DISABLE_GODOT_CI || github.run_attempt > 1 || github.event_name == 'workflow_dispatch' }}
     name: 📊 Static checks
     uses: ./.github/workflows/static_checks.yml
 
@@ -18,21 +51,19 @@ jobs:
   android-build:
     name: 🤖 Android
     needs: static-checks
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
+    if: inputs.android
     uses: ./.github/workflows/android_builds.yml
-    secrets:
-      SERVICE_ACCOUNT_KEY: ${{ secrets.SERVICE_ACCOUNT_KEY }}
 
   ios-build:
     name: 🍏 iOS
     needs: static-checks
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
+    if: inputs.ios
     uses: ./.github/workflows/ios_builds.yml
 
   linux-build:
     name: 🐧 Linux
     needs: static-checks
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
+    if: inputs.linux
     uses: ./.github/workflows/linux_builds.yml
     with:
       changed-files: ${{ needs.static-checks.outputs.changed-files }}
@@ -40,17 +71,23 @@ jobs:
   macos-build:
     name: 🍎 macOS
     needs: static-checks
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
+    if: inputs.macos || inputs.macos_template
     uses: ./.github/workflows/macos_builds.yml
+    with:
+      editor: ${{ inputs.macos }}
+      template: ${{ inputs.macos_template }}
 
   windows-build:
     name: 🏁 Windows
     needs: static-checks
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
+    if: inputs.windows
     uses: ./.github/workflows/windows_builds.yml
 
   web-build:
     name: 🌐 Web
     needs: static-checks
-    if: needs.static-checks.outputs.sources-changed == 'true' || github.event_name != 'pull_request'
+    if: inputs.wasm64 || inputs.wasm32
     uses: ./.github/workflows/web_builds.yml
+    with:
+      wasm64: ${{ inputs.wasm64 }}
+      wasm32: ${{ inputs.wasm32 }}

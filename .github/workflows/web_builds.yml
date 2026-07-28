@@ -1,7 +1,23 @@
 name: 🌐 Web Builds
 on:
   workflow_call:
+    inputs:
+      wasm64:
+        type: boolean
+        default: false
+      wasm32:
+        type: boolean
+        default: false
   workflow_dispatch:
+    inputs:
+      wasm64:
+        description: Build the threaded wasm64 template
+        type: boolean
+        default: true
+      wasm32:
+        description: Build the non-threaded wasm32 template
+        type: boolean
+        default: false
 
 # Global Settings
 env:
@@ -13,24 +29,14 @@ env:
 
 jobs:
   web-template:
+    if: inputs.wasm64 || inputs.wasm32
     runs-on: ubuntu-24.04
-    name: ${{ matrix.name }}
+    name: Template (${{ matrix.arch }})
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: Template w/ threads, 64-bit (target=template_release, threads=yes, arch=wasm64)
-            cache-name: web-template
-            target: template_release
-            scons-flags: threads=yes arch=wasm64
-            artifact: true
-
-          - name: Template w/o threads, 32-bit (target=template_release, threads=no, arch=wasm32)
-            cache-name: web-nothreads-template
-            target: template_release
-            scons-flags: threads=no arch=wasm32
-            artifact: true
+        arch: ${{ fromJSON(inputs.wasm64 && inputs.wasm32 && '["wasm64","wasm32"]' || inputs.wasm64 && '["wasm64"]' || '["wasm32"]') }}
 
     steps:
       - name: Checkout
@@ -51,7 +57,7 @@ jobs:
       - name: Restore Godot build cache
         uses: ./.github/actions/godot-cache-restore
         with:
-          cache-name: ${{ matrix.cache-name }}
+          cache-name: ${{ matrix.arch == 'wasm64' && 'web-template' || 'web-nothreads-template' }}
         continue-on-error: true
 
       - name: Setup Python and SCons
@@ -60,18 +66,17 @@ jobs:
       - name: Compilation
         uses: ./.github/actions/godot-build
         with:
-          scons-flags: ${{ env.SCONS_FLAGS }} ${{ matrix.scons-flags }}
+          scons-flags: ${{ env.SCONS_FLAGS }} threads=${{ matrix.arch == 'wasm64' && 'yes' || 'no' }} arch=${{ matrix.arch }}
           platform: web
-          target: ${{ matrix.target }}
+          target: template_release
 
       - name: Save Godot build cache
         uses: ./.github/actions/godot-cache-save
         with:
-          cache-name: ${{ matrix.cache-name }}
+          cache-name: ${{ matrix.arch == 'wasm64' && 'web-template' || 'web-nothreads-template' }}
         continue-on-error: true
 
       - name: Upload artifact
         uses: ./.github/actions/upload-artifact
-        if: matrix.artifact
         with:
-          name: ${{ matrix.cache-name }}
+          name: ${{ matrix.arch == 'wasm64' && 'web-template' || 'web-nothreads-template' }}

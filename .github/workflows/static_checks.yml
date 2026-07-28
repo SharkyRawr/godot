@@ -9,7 +9,6 @@ on:
         description: Determines if any source files were changed.
         value: ${{ jobs.static-checks.outputs.sources-changed }}
   workflow_dispatch:
-
 jobs:
   static-checks:
     name: Code style, file formatting, and docs
